@@ -139,21 +139,21 @@ namespace BiomeLib
             if (!string.IsNullOrEmpty(def.Music) && def.Music.ToLower() != "null")
             {
                 BiomeHandler.AddBiomeMusic(def.Id, AudioUtils.GetFmodAsset(def.Music));
-                Logger.LogInfo($"[BiomeLib] Added built-in music for '{def.Id}'");
+                Logger.LogInfo($"[BiomeLib] Added built-in music for '{def.Id}' custom audio will still be loaded and played if used");
             }
             else
             {
-                Logger.LogInfo($"[BiomeLib] Skipping built-in music for '{def.Id}'");
+                Logger.LogInfo($"[BiomeLib] Skipping built-in music for '{def.Id}' custom audio will still be loaded and played if used");
             }
 
             if (!string.IsNullOrEmpty(def.Ambience) && def.Ambience.ToLower() != "null")
             {
                 BiomeHandler.AddBiomeAmbience(def.Id, AudioUtils.GetFmodAsset(def.Ambience), FMODGameParams.InteriorState.OnlyOutside);
-                Logger.LogInfo($"[BiomeLib] Added built-in ambience for '{def.Id}'");
+                Logger.LogInfo($"[BiomeLib] Added built-in ambience for '{def.Id}' custom audio will still be loaded and played if used");
             }
             else
             {
-                Logger.LogInfo($"[BiomeLib] Skipping built-in ambience for '{def.Id}'");
+                Logger.LogInfo($"[BiomeLib] Skipping built-in ambience for '{def.Id}' custom audio will still be loaded and played if used");
             }
         }
 
@@ -162,7 +162,6 @@ namespace BiomeLib
             while (Player.main == null)
                 yield return new WaitForSeconds(0.5f);
 
-            Logger.LogInfo("[BiomeLib] Player detected. Spawning biome volumes...");
 
             foreach (var def in loadedBiomes)
             {
@@ -179,9 +178,9 @@ namespace BiomeLib
                         {
                             info = PrefabInfo.WithTechType(volumeId);
                         }
-                        catch (System.Exception createEx)
+                        catch (System.Exception)
                         {
-                            Logger.LogWarning($"[BiomeLib] PrefabInfo.WithTechType threw for {volumeId}: {createEx.Message}");
+
                             createdInfo = false;
                         }
 
@@ -204,7 +203,6 @@ namespace BiomeLib
                         }
                         else
                         {
-                            Logger.LogInfo($"[BiomeLib] Skipping prefab creation for {volumeId} (already exists or failed earlier).");
                             registeredPrefabIds.Add(volumeId);
                         }
                     }
@@ -228,6 +226,7 @@ namespace BiomeLib
                     try
                     {
                         ConsoleCommandsHandler.AddBiomeTeleportPosition(def.Id, def.Position);
+                        ConsoleCommandsHandler.AddGotoTeleportPosition(def.Id, def.Position);
                     }
                     catch { }
 
