@@ -61,7 +61,7 @@ namespace BiomeLib
                     var def = JsonConvert.DeserializeObject<BiomeDefinition>(json);
 
                     if (def == null)
-                        throw new System.Exception("Invalid or empty biome definition JSON.");
+                        throw new System.Exception("[BiomeLib] Invalid or empty biome definition JSON.");
 
                     RegisterCustomAudio(def, folder);
 
