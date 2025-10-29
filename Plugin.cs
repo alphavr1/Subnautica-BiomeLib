@@ -1,5 +1,6 @@
 using BepInEx;
 using BiomeLib.BiomeLib;
+using BiomeLib;
 using Nautilus.Assets;
 using Nautilus.Assets.PrefabTemplates;
 using Nautilus.FMod;
@@ -9,6 +10,7 @@ using Newtonsoft.Json;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using UnityEngine;
 
@@ -16,7 +18,7 @@ namespace BiomeLib
 {
     [BepInPlugin("com.Violet.BiomeLib", "BiomeLib", "1.1.0")]
     [BepInDependency("com.snmodding.nautilus", BepInDependency.DependencyFlags.HardDependency)]
-    public class Plugin : BaseUnityPlugin
+    public sealed class Plugin : BaseUnityPlugin
     {
         private readonly List<BiomeDefinition> loadedBiomes = new List<BiomeDefinition>();
         private readonly HashSet<string> registeredPrefabIds = new HashSet<string>();
@@ -24,223 +26,239 @@ namespace BiomeLib
 
         private void Awake()
         {
-            Logger.LogInfo("[BiomeLib] Initializing...");
+            Logger.LogInfo("[BiomeLib] Initializing…");
 
-            string pluginsDir = Paths.PluginPath;
-            string biomeLibDir = Path.Combine(pluginsDir, "BiomeLib", "CustomBiomes");
-
-            Directory.CreateDirectory(biomeLibDir);
-
-            List<string> biomeFolders = new List<string> { biomeLibDir };
-
-            foreach (string modFolder in Directory.GetDirectories(pluginsDir))
+            foreach (string folder in FindBiomeDirectories())
             {
-                string customBiomeFolder = Path.Combine(modFolder, "CustomBiomes");
-                if (Directory.Exists(customBiomeFolder))
-                {
-                    biomeFolders.Add(customBiomeFolder);
-                    Logger.LogInfo($"[BiomeLib] Found CustomBiomes in: {Path.GetFileName(modFolder)}");
-                }
+                LoadBiomesFrom(folder);
             }
 
-            foreach (string folder in biomeFolders)
-            {
-                LoadBiomesFromFolder(folder);
-            }
-
-            StartCoroutine(WaitForPlayerAndSpawnBiomes());
+            StartCoroutine(WaitForPlayerThenSpawnBiomes());
         }
 
-        private void LoadBiomesFromFolder(string folder)
+        private IEnumerable<string> FindBiomeDirectories()
         {
-            foreach (string file in Directory.GetFiles(folder, "*.json"))
+            string pluginsRoot = Paths.PluginPath;
+            string coreBiomeDirectory = Path.Combine(pluginsRoot, "BiomeLib", "CustomBiomes");
+
+            Directory.CreateDirectory(coreBiomeDirectory);
+
+            yield return coreBiomeDirectory;
+
+            foreach (string pluginDirectory in Directory.GetDirectories(pluginsRoot))
+            {
+                string customBiomeDirectory = Path.Combine(pluginDirectory, "CustomBiomes");
+                if (Directory.Exists(customBiomeDirectory))
+                {
+                    Logger.LogInfo($"[BiomeLib] Found CustomBiomes in: {Path.GetFileName(pluginDirectory)}");
+                    yield return customBiomeDirectory;
+                }
+            }
+        }
+
+        private void LoadBiomesFrom(string directory)
+        {
+            foreach (string filePath in Directory.GetFiles(directory, "*.json"))
             {
                 try
                 {
-                    var json = File.ReadAllText(file);
-                    var def = JsonConvert.DeserializeObject<BiomeDefinition>(json);
+                    string json = File.ReadAllText(filePath);
+                    BiomeDefinition biome = JsonConvert.DeserializeObject<BiomeDefinition>(json);
 
-                    if (def == null)
-                        throw new System.Exception("[BiomeLib] Invalid or empty biome definition JSON.");
+                    if (biome == null)
+                    {
+                        throw new InvalidDataException("[BiomeLib] Invalid or empty biome definition JSON.");
+                    }
 
-                    RegisterCustomAudio(def, folder);
+                    RegisterCustomAudio(biome, directory);
+                    RegisterBiome(biome);
 
-                    RegisterBiome(def);
-                    loadedBiomes.Add(def);
+                    loadedBiomes.Add(biome);
 
-                    Logger.LogInfo($"[BiomeLib] Registered biome: {def.Id}");
+                    Logger.LogInfo($"[BiomeLib] Registered biome: {biome.Id}");
                 }
-                catch (System.Exception ex)
+                catch (System.Exception exception)
                 {
-                    Logger.LogError($"[BiomeLib] Failed to load {Path.GetFileName(file)}: {ex.Message}");
+                    Logger.LogError($"[BiomeLib] Failed to load {Path.GetFileName(filePath)}: {exception.Message}");
                 }
             }
         }
 
-        private void RegisterCustomAudio(BiomeDefinition def, string biomeFolderPath)
+        private void RegisterCustomAudio(BiomeDefinition biome, string biomeDirectory)
         {
             try
             {
-                var soundSource = new ModFolderSoundSource(biomeFolderPath, Assembly.GetExecutingAssembly());
-                var builder = new FModSoundBuilder(soundSource);
+                var soundSource = new ModFolderSoundSource(biomeDirectory, Assembly.GetExecutingAssembly());
+                var soundBuilder = new FModSoundBuilder(soundSource);
 
-                if (def.UseCustomMusic && !string.IsNullOrEmpty(def.CustomMusic))
+                if (biome.UseCustomMusic && !string.IsNullOrWhiteSpace(biome.CustomMusic))
                 {
-                    string musicEventId = $"biome_{def.Id}_music";
-                    builder.CreateNewEvent(musicEventId, Nautilus.Utility.AudioUtils.BusPaths.Music)
-                           .SetModeMusic(true)
-                           .SetMode2D(true)
-                           .SetSounds(true, Path.GetFileNameWithoutExtension(def.CustomMusic))
-                           .Register();
+                    string musicEventId = $"biome_{biome.Id}_music";
 
-                    def.Music = musicEventId;
-                    BiomeHandler.AddBiomeMusic(def.Id, AudioUtils.GetFmodAsset(musicEventId));
+                    soundBuilder.CreateNewEvent(musicEventId, AudioUtils.BusPaths.Music)
+                                .SetModeMusic(true)
+                                .SetMode2D(true)
+                                .SetSounds(true, Path.GetFileNameWithoutExtension(biome.CustomMusic))
+                                .Register();
 
-                    Logger.LogInfo($"[BiomeLib] Registered custom music for '{def.Id}': {def.CustomMusic}");
+                    biome.Music = musicEventId;
+                    BiomeHandler.AddBiomeMusic(biome.Id, AudioUtils.GetFmodAsset(musicEventId));
+
+                    Logger.LogInfo($"[BiomeLib] Registered custom music for '{biome.Id}': {biome.CustomMusic}");
                 }
 
-                if (def.UseCustomAmbience && !string.IsNullOrEmpty(def.CustomAmbience))
+                if (biome.UseCustomAmbience && !string.IsNullOrWhiteSpace(biome.CustomAmbience))
                 {
-                    string ambienceEventId = $"biome_{def.Id}_ambience";
-                    builder.CreateNewEvent(ambienceEventId, Nautilus.Utility.AudioUtils.BusPaths.UnderwaterAmbient)
-                           .SetMode3D(3f, 70f)
-                           .SetSounds(true, Path.GetFileNameWithoutExtension(def.CustomAmbience))
-                           .Register();
+                    string ambienceEventId = $"biome_{biome.Id}_ambience";
 
-                    def.Ambience = ambienceEventId;
-                    BiomeHandler.AddBiomeAmbience(def.Id, AudioUtils.GetFmodAsset(ambienceEventId),
+                    soundBuilder.CreateNewEvent(ambienceEventId, AudioUtils.BusPaths.UnderwaterAmbient)
+                                .SetMode3D(3f, 70f)
+                                .SetSounds(true, Path.GetFileNameWithoutExtension(biome.CustomAmbience))
+                                .Register();
+
+                    biome.Ambience = ambienceEventId;
+                    BiomeHandler.AddBiomeAmbience(biome.Id, AudioUtils.GetFmodAsset(ambienceEventId),
                                                   FMODGameParams.InteriorState.OnlyOutside);
 
-                    Logger.LogInfo($"[BiomeLib] Registered custom ambience for '{def.Id}': {def.CustomAmbience}");
+                    Logger.LogInfo($"[BiomeLib] Registered custom ambience for '{biome.Id}': {biome.CustomAmbience}");
                 }
             }
-            catch (System.Exception ex)
+            catch (System.Exception exception)
             {
-                Logger.LogError($"[BiomeLib] Failed to register custom audio for '{def.Id}': {ex.Message}");
+                Logger.LogError($"[BiomeLib] Failed to register custom audio for '{biome.Id}': {exception.Message}");
             }
         }
 
-        private void RegisterBiome(BiomeDefinition def)
+        private void RegisterBiome(BiomeDefinition biome)
         {
             var fogSettings = BiomeUtils.CreateBiomeSettings(
-                def.FogColorVec,
-                def.FogDensity,
-                def.LightColor,
-                def.LightIntensity,
-                def.AmbientColor,
-                def.BloomIntensity,
-                def.ScatterIntensity,
-                def.SkyboxIntensity,
-                def.Brightness,
-                def.Distortion);
+                biome.FogColorVec,
+                biome.FogDensity,
+                biome.LightColor,
+                biome.LightIntensity,
+                biome.AmbientColor,
+                biome.BloomIntensity,
+                biome.ScatterIntensity,
+                biome.SkyboxIntensity,
+                biome.Brightness,
+                biome.Distortion);
 
-            BiomeHandler.RegisterBiome(def.Id, fogSettings, new BiomeHandler.SkyReference(def.Sky));
+            BiomeHandler.RegisterBiome(biome.Id, fogSettings, new BiomeHandler.SkyReference(biome.Sky));
 
-            if (!string.IsNullOrEmpty(def.Music) && def.Music.ToLower() != "null")
+            if (!string.IsNullOrWhiteSpace(biome.Music) && !string.Equals(biome.Music, "null", System.StringComparison.OrdinalIgnoreCase))
             {
-                BiomeHandler.AddBiomeMusic(def.Id, AudioUtils.GetFmodAsset(def.Music));
-                Logger.LogInfo($"[BiomeLib] Added built-in music for '{def.Id}' custom audio will still be loaded and played if used");
+                BiomeHandler.AddBiomeMusic(biome.Id, AudioUtils.GetFmodAsset(biome.Music));
+                Logger.LogInfo($"[BiomeLib] Added built-in music for '{biome.Id}'. Custom audio will override if configured.");
             }
             else
             {
-                Logger.LogInfo($"[BiomeLib] Skipping built-in music for '{def.Id}' custom audio will still be loaded and played if used");
+                Logger.LogInfo($"[BiomeLib] No built-in music for '{biome.Id}'. Custom audio will play if configured.");
             }
 
-            if (!string.IsNullOrEmpty(def.Ambience) && def.Ambience.ToLower() != "null")
+            if (!string.IsNullOrWhiteSpace(biome.Ambience) && !string.Equals(biome.Ambience, "null", System.StringComparison.OrdinalIgnoreCase))
             {
-                BiomeHandler.AddBiomeAmbience(def.Id, AudioUtils.GetFmodAsset(def.Ambience), FMODGameParams.InteriorState.OnlyOutside);
-                Logger.LogInfo($"[BiomeLib] Added built-in ambience for '{def.Id}' custom audio will still be loaded and played if used");
+                BiomeHandler.AddBiomeAmbience(biome.Id, AudioUtils.GetFmodAsset(biome.Ambience),
+                                              FMODGameParams.InteriorState.OnlyOutside);
+                Logger.LogInfo($"[BiomeLib] Added built-in ambience for '{biome.Id}'. Custom audio will override if configured.");
             }
             else
             {
-                Logger.LogInfo($"[BiomeLib] Skipping built-in ambience for '{def.Id}' custom audio will still be loaded and played if used");
+                Logger.LogInfo($"[BiomeLib] No built-in ambience for '{biome.Id}'. Custom audio will play if configured.");
             }
         }
 
-        private IEnumerator WaitForPlayerAndSpawnBiomes()
+        private IEnumerator WaitForPlayerThenSpawnBiomes()
         {
-            while (Player.main == null)
-                yield return new WaitForSeconds(0.5f);
+            yield return new WaitUntil(() => Player.main != null);
 
-
-            foreach (var def in loadedBiomes)
+            foreach (BiomeDefinition biome in loadedBiomes)
             {
-                string volumeId = def.Id + "_Volume";
+                string volumeId = $"{biome.Id}_Volume";
 
                 try
                 {
-                    if (!registeredPrefabIds.Contains(volumeId))
-                    {
-                        bool createdInfo = true;
-                        PrefabInfo info = default;
+                    RegisterBiomePrefab(volumeId, biome);
+                    RegisterBiomeSpawn(volumeId, biome);
+                    RegisterConsoleTeleportCommands(biome);
 
-                        try
-                        {
-                            info = PrefabInfo.WithTechType(volumeId);
-                        }
-                        catch (System.Exception)
-                        {
-
-                            createdInfo = false;
-                        }
-
-                        if (createdInfo)
-                        {
-                            try
-                            {
-                                var prefab = new CustomPrefab(info);
-                                var template = new AtmosphereVolumeTemplate(info, AtmosphereVolumeTemplate.VolumeShape.Sphere, def.Id);
-                                prefab.SetGameObject(template);
-                                prefab.Register();
-
-                                registeredPrefabIds.Add(volumeId);
-                                Logger.LogInfo($"[BiomeLib] Registered prefab info for {volumeId}");
-                            }
-                            catch (System.Exception prefabEx)
-                            {
-                                Logger.LogWarning($"[BiomeLib] Failed to register prefab for {volumeId}: {prefabEx.Message}");
-                            }
-                        }
-                        else
-                        {
-                            registeredPrefabIds.Add(volumeId);
-                        }
-                    }
-
-                    if (!registeredSpawnIds.Contains(volumeId))
-                    {
-                        try
-                        {
-                            CoordinatedSpawnsHandler.RegisterCoordinatedSpawn(
-                                new SpawnInfo(volumeId, def.Position, Quaternion.identity, def.Scale));
-                            registeredSpawnIds.Add(volumeId);
-                            Logger.LogInfo($"[BiomeLib] Registered spawn for {def.Id}");
-                        }
-                        catch (System.Exception spawnEx)
-                        {
-                            Logger.LogWarning($"[BiomeLib] Failed to register spawn for {def.Id}: {spawnEx.Message}");
-                            registeredSpawnIds.Add(volumeId);
-                        }
-                    }
-
-                    try
-                    {
-                        ConsoleCommandsHandler.AddBiomeTeleportPosition(def.Id, def.Position);
-                        ConsoleCommandsHandler.AddGotoTeleportPosition(def.Id, def.Position);
-                    }
-                    catch { }
-
-                    Logger.LogInfo($"[BiomeLib] Spawn process completed for biome: {def.Id}");
+                    Logger.LogInfo($"[BiomeLib] Spawn process completed for biome: {biome.Id}");
                 }
-                catch (System.Exception ex)
+                catch (System.Exception exception)
                 {
-                    Logger.LogError($"[BiomeLib] Failed to spawn biome {def.Id}: {ex.Message}\n{ex.StackTrace}");
+                    Logger.LogError($"[BiomeLib] Failed to spawn biome {biome.Id}: {exception.Message}\n{exception.StackTrace}");
                 }
 
                 yield return null;
             }
 
             Logger.LogInfo($"[BiomeLib] Finished spawning {loadedBiomes.Count} biomes.");
+        }
+
+        private void RegisterBiomePrefab(string volumeId, BiomeDefinition biome)
+        {
+            if (registeredPrefabIds.Contains(volumeId))
+            {
+                return;
+            }
+
+            try
+            {
+                PrefabInfo prefabInfo = PrefabInfo.WithTechType(volumeId);
+                var prefab = new CustomPrefab(prefabInfo);
+                var volumeTemplate = new AtmosphereVolumeTemplate(prefabInfo,
+                                                                  AtmosphereVolumeTemplate.VolumeShape.Sphere,
+                                                                  biome.Id);
+
+                prefab.SetGameObject(volumeTemplate);
+                prefab.Register();
+
+                Logger.LogInfo($"[BiomeLib] Registered prefab info for {volumeId}");
+            }
+            catch (System.Exception exception)
+            {
+                Logger.LogWarning($"[BiomeLib] Failed to register prefab for {volumeId}: {exception.Message}");
+            }
+            finally
+            {
+                registeredPrefabIds.Add(volumeId);
+            }
+        }
+
+        private void RegisterBiomeSpawn(string volumeId, BiomeDefinition biome)
+        {
+            if (registeredSpawnIds.Contains(volumeId))
+            {
+                return;
+            }
+
+            try
+            {
+                var spawn = new SpawnInfo(volumeId, biome.Position, Quaternion.identity, biome.Scale);
+                CoordinatedSpawnsHandler.RegisterCoordinatedSpawn(spawn);
+
+                Logger.LogInfo($"[BiomeLib] Registered spawn for {biome.Id}");
+            }
+            catch (System.Exception exception)
+            {
+                Logger.LogWarning($"[BiomeLib] Failed to register spawn for {biome.Id}: {exception.Message}");
+            }
+            finally
+            {
+                registeredSpawnIds.Add(volumeId);
+            }
+        }
+
+        private void RegisterConsoleTeleportCommands(BiomeDefinition biome)
+        {
+            try
+            {
+                ConsoleCommandsHandler.AddBiomeTeleportPosition(biome.Id, biome.Position);
+                ConsoleCommandsHandler.AddGotoTeleportPosition(biome.Id, biome.Position);
+            }
+            catch
+            {
+
+            }
         }
     }
 }
